@@ -1,0 +1,527 @@
+---
+title: "COVID 19 Data Analysis"
+author: "Courtney"
+date: "06/12/2021"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r library_packages, include=FALSE}
+library(tidyverse)
+library(lubridate)
+```
+
+In this report we are looking at a COVID-19 data from John Hopkins, in order to determine some global and US trends regarding COVID-19 cases, deaths and the differences in those trends across countries and states. Tidyverse, Lubridate and ggplot2 are used in order to clean, transform and visualize the data and the analysis leads to some very interesting outcomes. A few models are created of the model also to further understand the relationships between variables. 
+
+## Read in  Data
+
+Start by reading in the data which is retrieved from GitHub. The data that is being used is from John Hopkins University Center for Systems Science and Engineering (CSSE). It is split up into files, two containing data for the US, split up into cases and deaths, and two for global cases split up the same way. All four of these data sets are read into separate variables and further investigated later on in this report. The URL for the main Github folder containing the data is given below, and from that page it is possible to navigate to each of the individual data sets. 
+
+The URL the data is found at is https://github.com/CSSEGISandData/COVID-19/tree/master/csse_covid_19_data/csse_covid_19_time_series
+
+```{r read_data}
+# LOCATE DATA
+# Data is contained in four different files
+# All coming from the same folder
+url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+
+file_names <- c("time_series_covid19_confirmed_US.csv",
+                "time_series_covid19_confirmed_global.csv",
+                "time_series_covid19_deaths_US.csv",
+                "time_series_covid19_deaths_global.csv"
+)
+
+urls <- str_c(url_in, file_names)
+
+# READ IN THE DATA
+global_cases <- read.csv(urls[2]) # imported 3342 rows, 675 column
+us_cases <- read.csv(urls[1]) # imported 280 rows, 668 column
+global_deaths <- read.csv(urls[4]) # imported 3342 rows, 675 column
+us_deaths <- read.csv(urls[3]) # imported 280 rows, 668 column
+```
+
+Now that the data is loaded into our variables, we can start to examine and make sense of it. The data in its current form is not convenient for us to work with, or even display. There are a few steps we can take to resolve this issue, and those will be shown in detail in the next section.
+
+## Clean up the  Data
+
+Now we can look at the data and begin tidying the data and transforming it. The first issue addressed is that each day in the data has its own column. We want to pivot that so that every row repersents one day. Also we want to combine the global cases and deaths as well as the US cases and deaths. Additional tiding steps included removing Lat and Long columns as they will not be used, renaming a few variables, converting date variables to the proper class and some preliminary filtering.
+
+Although similar steps are taken to clean each of the data frames, the are slight differences in the global and US data and is done separate for each. The data after being tidied and merged is shown below unter the Global and US headings.
+
+### Global data
+
+```{r tidy_Global, echo=FALSE}
+
+# Clean up global cases data
+# First step is to move each date to a separate row for each country in global_cases
+global_cases <- global_cases %>%
+  pivot_longer(cols = -c(`Province.State`, `Country.Region`, Lat, Long),
+               names_to = "date",
+               values_to = "cases") %>%
+  select(-c(Lat, Long))
+
+# Now do the same for global deaths
+global_deaths <- global_deaths %>%
+  pivot_longer(cols = -c(`Province.State`, `Country.Region`, Lat, Long),
+               names_to = "date",
+               values_to = "deaths") %>%
+  select(-c(Lat, Long))
+
+
+# Combine the deaths and cases per date, change the names for they don't contain ., 
+# and convert date column into mdy (date type)
+global <- global_cases %>%
+  full_join(global_deaths) %>%
+  rename(Country_Region = `Country.Region`,
+         Province_State = `Province.State`) %>%
+  mutate(date = as.Date(date, format = "X%m.%d.%y")) %>% 
+  filter(cases > 0)
+
+head(global)
+
+```
+
+### US data
+
+```{r tidy_US, echo=FALSE}
+
+# Now do the same thing with us data
+us_cases <- us_cases %>%
+  pivot_longer(cols = -(UID:Combined_Key),
+               names_to = "date",
+               values_to = "cases") %>%
+  select(Admin2:cases) %>%
+  mutate(date = as.Date(date, format = "X%m.%d.%y")) %>%
+  select(-c(Lat, Long_))
+
+# Admin2 is the county name, combine key combines county and state
+us_deaths<- us_deaths %>%
+  pivot_longer(cols = -(UID:Population),
+               names_to = "date",
+               values_to = "deaths") %>%
+  select(Admin2:deaths) %>%
+  mutate(date = as.Date(date, format = "X%m.%d.%y")) %>%
+  select(-c(Lat, Long_))
+
+US <- us_cases %>%
+  full_join(us_deaths)
+
+head(US)
+
+```
+## Transform the Data
+
+Looking at the tables above it is easy to compare the two data frames. You can see that there are more columns in the US data. Going back to the source or the data is is determined that Admin2 shows the county name, and the Combine_Key is both the county, state names and country put together. A combined_Key column can be created in the global data by merging the Province_State and Country_Region columns. Also the global data frame is missing population data for all the countries. This will be important as normalizing data with population will lead to more accurate comparisons. Population data is located on Github, also from John Hopkins University Center for Systems Science and Engineering, and added to our data in the following.
+
+The URL for that data is "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv
+
+```{r transform_data, echo=FALSE}
+# Need to create combined key column out of province and country columns
+global <- global %>%
+  unite("Combined_Key",
+        c(Province_State, Country_Region),
+        sep = ", ",
+        na.rm = TRUE,
+        remove = FALSE)
+
+# Need to find population info for global data
+uid_lookup_url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+
+
+uid <- read.csv(uid_lookup_url) %>%
+  select(-c(Lat, Long_, Combined_Key, code3, iso2, iso3, Admin2))
+
+global <- global %>% 
+  left_join(uid, by = c("Country_Region")) %>%
+  select(-c(UID, FIPS)) %>%
+  select(Country_Region, date, cases, deaths, Population, Combined_Key) %>%
+  left_join(global)
+
+head(global)
+head(US)
+```
+
+Now that both data frames are in similar formats, it will be alot easier in to analyze, visualize and model to pull out trends and correlations.
+
+## Visualize the Data
+
+Now we can begin to plot the data in order to determine what we can learn from it. In order to visualize certian plots we can group data in different ways to look at different aspects of it. 
+
+```{r visualizing_data, echo=FALSE, fig.height=6, message=FALSE, warning=FALSE}
+
+US_by_state <- US %>%
+  group_by(Province_State, Country_Region, date) %>%
+  summarize(cases = sum(cases), deaths = sum(deaths), 
+            Population = sum(Population)) %>%
+  mutate(deaths_per_mill = deaths * 1000000 / Population) %>%
+  mutate(cases_per_mill = cases * 1000000 / Population) %>%
+  select(Province_State, Country_Region, date, cases,
+         deaths, deaths_per_mill, Population) %>%
+  ungroup
+
+US_totals <- US_by_state %>%
+  group_by(Country_Region, date) %>%
+  summarize(cases = sum(cases), deaths = sum(deaths), 
+            Population = sum(Population))%>%
+  mutate(deaths_per_mill = deaths * 1000000 / Population) %>%
+  select(Country_Region, date, cases,
+         deaths, deaths_per_mill, Population) %>%
+  ungroup
+
+# Graph the cases and deaths for all of the US
+US_totals %>%
+  filter(cases>0) %>%
+  ggplot(aes(x=date, y=cases)) +
+  geom_line(aes(colour="Cases")) +
+  geom_point(aes(colour="Cases")) +
+  geom_line(aes(y=deaths, colour="Deaths")) +
+  geom_point(aes(y=deaths, colour="Deaths")) +
+  scale_y_log10() +
+  theme(legend.position = "bottom", axis.text.x = element_text(angle = 90)) +
+  labs(title = "COVID-19 in the US", y=NULL)  +
+  ggtitle("COVID-19 in the US") +
+  labs(y=NULL,  x="Date") +
+  theme(plot.title = element_text(size=20, hjust = 0.5),
+        axis.title.x = element_text(size=15),
+        axis.title.y = element_text(size=15), 
+        axis.text.x = element_text(size=10),
+        axis.text.y = element_text(size=10),
+        legend.title = element_blank())
+
+```
+This plot shows the number of cases present in the US since COVID-19 first appeared there. Its quite interesting as you can see there is quite a steep increase in cases and deaths right at the beginning of the pandemic, however it looks like the increase in cases is getting smaller. This could be because of the way the plot is being shown on a logarithmic scale. The following graph adjusts the plot so that instead of showing the total number of cases and deaths, it shows the new cases and deaths for each day, which makes it easier to see trends over periods of time, and you can see clearly that there are still a large number of new cases and deaths every day.
+
+```{r transform_again, echo=FALSE, fig.height=6, message=FALSE, warning=FALSE}
+
+US_by_state <- US_by_state %>%
+  mutate(new_cases = cases - lag(cases),
+         new_deaths = deaths - lag(deaths))
+
+US_totals <- US_totals %>%
+  mutate(new_cases = cases - lag(cases),
+         new_deaths = deaths - lag(deaths))
+
+
+US_totals %>%
+  filter(cases>0) %>%
+  ggplot(aes(x=date, y=new_cases)) +
+  geom_line(aes(colour="New Cases")) +
+  geom_point(aes(colour="New Cases")) +
+  geom_line(aes(y=new_deaths, colour="New Deaths")) +
+  geom_point(aes(y=new_deaths, colour="New Deaths")) +
+  scale_y_log10() +
+  theme(legend.position = "bottom", axis.text.x = element_text(angle = 90)) +
+  labs(title = "COVID-19 in the US", y=NULL)  +
+  ggtitle("COVID-19 in the US,
+          New Cases and New Deaths") +
+  labs(y=NULL,  x="Date") +
+  theme(plot.title = element_text(size=20, hjust = 0.5),
+        axis.title.x = element_text(size=15),
+        axis.title.y = element_text(size=15), 
+        axis.text.x = element_text(size=10),
+        axis.text.y = element_text(size=10),
+        legend.title = element_blank())
+  
+```
+You can see from this graph that there has been periods over the course of the pandemic in which the number of cases and deaths per day has declined. It looks like July of 2021 saw the lowest number of new deaths and cases since the start of the pandemic, but that low period unfortunately didn't last for long as the numbers rose up again reaching close to record highs around September / October. On thing that is interesting to note is that the variability day to day has increased greatly in the recent months, where it was minimal closer to the beginning of the pandemic. It would be interesting to do further analysis on why this might be, and see if it's potentially related to vaccine administration. One last thing to note about this graph is that it is interesting to see that the trends in deaths closely follow the trends in cases.
+
+The last two plots have shown the data for the United Sates as a whole. Next well break down the data by state to see whether there are similarities in how the pandemic played out between the states and there are any notable outlines. For this analysis we will be focusing on cases only, as this seems to be relatively indicative of trends in deaths.
+
+```{r visualizing_data_0, echo=FALSE, fig.height=7.5, warning=FALSE}
+state="New York"
+US_by_state %>% 
+#  filter(Province_State == state) %>%
+  filter(cases>0) %>%
+  mutate(cases_per_thousand = cases * 1000 / Population) %>%
+  ggplot(aes(x=date, y=cases_per_thousand)) +
+  geom_line(aes(colour=Province_State)) +
+  theme(legend.position = "bottom", axis.text.x = element_text(angle = 90)) +
+  ggtitle("COVID-19 in the US, Cases per State") +
+  labs(y="Cases (per thousand)",  x="Date", colour="State") +
+  theme(plot.title = element_text(size=20, hjust = 0.5),
+        axis.title.x = element_text(size=15),
+        axis.title.y = element_text(size=15), 
+        axis.text.x = element_text(size=10),
+        axis.text.y = element_text(size=10),
+        legend.text=element_text(size=5))
+        
+
+
+```
+This plot shows the number of number of cases per 1000 in each of the states over the course of the pandemic,. This plot gives a good idea of how well each state did in preventing the spread of Covid over time, but there is too much going on to be able to discern in depth meaining from it. For this section of the analysis we are going to focus on only a few states. The states focused on are North Dakota which had the highest number or cases per million, Hawaii which had the least, Michigan who fell in the middle, and Florida, New York, and California as they got so much press coverage over the pandemic. The plot below is showing the trend of cases per million for each of these states. 
+
+```{r visualizing_data_1, echo=FALSE, fig.height=6, warning=FALSE}
+#states <- 
+US_by_state %>% 
+  mutate(cases_per_thousand = cases * 1000 / Population) %>%
+  filter(Province_State == c("New York", "California","Florida",  "Hawaii", "North Dakota", "Michigan") ) %>%
+  filter(cases>0) %>%
+  ggplot(aes(x=date, y=cases_per_thousand)) +
+  geom_line(aes(colour=Province_State)) +
+  #scale_y_log10() +
+  ggtitle("COVID-19 in the US, States of Interest") +
+  labs(y="Cases (per thousand)",  x="Date", colour="State") +
+  theme(plot.title = element_text(size=20, hjust = 0.5),
+        axis.title.x = element_text(size=15),
+        axis.title.y = element_text(size=15), 
+        axis.text.x = element_text(size=10),
+        axis.text.y = element_text(size=10),
+        )
+
+
+```
+You can clearly see the North Dakota had the highest number of cases per million from pretty early on in the pandemic. Hawaii also from the start had less than the other five states, and didn't have any major increases until around September of this year. That may be because it is more isolated from the rest of the country. The sharp increase that happened recently might be related to more travel that has been permitted recently. Its also interesting to see that New York started out with a higher rate of cases and then leveled out to the middle of the pack. This could be because its such a major travel hub and saw large numbers of cases early on. Michigan clearly has stuck around the middle for almost the entire time. California, New York and Florida are all around the same rate, between Michigan and North Dakota, for the most part, but you can see that Florida had a big jump around September as well. It would be interesting in a deeper analysis to look at data on the implementation of lock downs, mask mandates and travel restrictions in each state to determine if those correlated with the number of cases and deaths.
+
+Next we will look at the difference in new cases for these same states over the course of the pandemic.
+
+
+```{r visualizing_data_2, echo=FALSE, fig.height=6, warning=FALSE}
+#states <- 
+US_by_state %>% 
+  filter(Province_State == c("New York", "California","Florida",  "Hawaii", "North Dakota", "Michigan") ) %>%
+  filter(cases>0) %>%
+  ggplot(aes(x=date, y=new_cases)) +
+  geom_line(aes(colour=Province_State)) +
+  #scale_y_log10() +
+  ggtitle("COVID-19 in the US,
+          New Daily Cases in States of Interest") +
+  labs(y="Daily Cases ",  x="Date", colour="State") +
+  theme(plot.title = element_text(size=20, hjust = 0.5),
+        axis.title.x = element_text(size=15),
+        axis.title.y = element_text(size=15), 
+        axis.text.x = element_text(size=10),
+        axis.text.y = element_text(size=10),
+        )
+
+
+```
+
+
+This plot is interesting as it shows some instances of huge amounts of cases being reported in California, with the highest around 45000 per day, and Florida, wit around 70000. These outlines make it difficult to see smaller, monthly trends, and data from states that did not have these huge numbers of new cases. This might explain however why these areas were receiving so much media coverage, and it might be interesting to look into the situations surrounding them. The next plot zooms in on the states without these extreme outliers.
+
+```{r visualizing_data_3, echo=FALSE, fig.height=6, warning=FALSE}
+#states <- 
+US_by_state %>% 
+  filter(Province_State == c("New York",  "Hawaii", "North Dakota", "Michigan") ) %>%
+  filter(cases>0) %>%
+  ggplot(aes(x=date, y=new_cases)) +
+  geom_line(aes(colour=Province_State)) +
+  #scale_y_log10() +
+  ggtitle("COVID-19 in the US,
+          New Daily Cases in States of Interest 
+          Removing Outliers") +
+  labs(y="Daily Cases ",  x="Date", colour="State") +
+  theme(plot.title = element_text(size=20, hjust = 0.5),
+        axis.title.x = element_text(size=15),
+        axis.title.y = element_text(size=15), 
+        axis.text.x = element_text(size=10),
+        axis.text.y = element_text(size=10),
+        )
+
+
+```
+
+
+We can gather a few surprising things from this plot. You can see that although the number of cases per thousand is highest for North Dakota, there are states which are seeing much greater number of new cases each day. Hawaii however being the lowest per capital cases also seems to have the lowest number of new cases for most of the pandemic. It seems that the number of new cases is very closely tied to the population of each stats. One thing that is interesting to not is that the number of cases more recent months  have been a lot more variable, with large differences in the numbers day to day. I would be interesting to see if there were any ties between this and vaccine administration. 
+
+We will look at one last group of visualization, which will be related to what we focus the model that created on. This part of the analysis will look at the country data, and more specifically at Canada, which is the country I live in. The fist plot that will be created will be similar to the fist one we looked at for the United States. It will show the number of cases and number of deaths that have occurred in Canada over the course of the pandemic on a log scale.
+
+
+```{r transform_1, warning=FALSE, include=FALSE}
+Global_by_Country <- global %>%
+  group_by(Province_State, Country_Region, date) %>%
+  summarize(cases = sum(cases), deaths = sum(deaths), 
+            Population = sum(Population)) %>%
+  mutate(deaths_per_mill = deaths * 1000000 / Population) %>%
+  mutate(cases_per_mill = cases * 1000000 / Population) %>%
+  select(Province_State, Country_Region, date, cases,
+         deaths, deaths_per_mill, Population) %>%
+  ungroup
+
+Global_totals <- Global_by_Country %>%
+  group_by(Country_Region, date) %>%
+  summarize(cases = sum(cases), deaths = sum(deaths), 
+            Population = sum(Population))%>%
+  mutate(deaths_per_mill = deaths * 1000000 / Population) %>%
+  select(Country_Region, date, cases,
+         deaths, deaths_per_mill, Population) %>%
+  ungroup
+
+Canada_totals <- Global_by_Country %>%
+  filter(Country_Region == "Canada") %>%
+  group_by(Province_State) %>%
+  summarize(deaths=max(deaths), cases=max(cases),
+            Population = max(Population), cases_per_thou = 1000 * cases / Population,
+            deaths_per_thou = 1000 * deaths / Population)
+
+```
+
+```{r visualizing_data_4, echo=FALSE, fig.height=6, message=FALSE, warning=FALSE}
+
+
+Global_totals %>%
+  filter(Country_Region == "Canada") %>%
+  filter(cases>0) %>%
+  ggplot(aes(x=date, y=cases)) +
+  geom_line(aes(colour="cases")) +
+  geom_point(aes(colour="cases")) +
+  geom_line(aes(y=deaths, colour="deaths")) +
+  geom_point(aes(y=deaths, colour="deaths")) +
+  scale_y_log10() +
+  ggtitle("COVID-19 in the Canada") +
+  labs(y=NULL,  x="Date", colour=NULL) +
+  theme(plot.title = element_text(size=20, hjust = 0.5),
+        axis.title.x = element_text(size=15),
+        axis.title.y = element_text(size=15), 
+        axis.text.x = element_text(size=10),
+        axis.text.y = element_text(size=10),
+        )
+
+
+```
+You can see that similarly in Canada the deaths are quite closely related to the total numbers of cases, though it looks like in the last year the number of cases has risen by more than the deaths. You can also see that over all there has been less cases in  Canada then there was in the United States. We can also normalize this graph like we did for the US case to show the new cases and new deaths each day, in order to better see trends. That plot is shown next.
+
+
+```{r visualizing_data_5, echo=FALSE, fig.height=6, warning=FALSE}
+Global_totals <- Global_totals %>%
+  mutate(new_cases = cases - lag(cases),
+         new_deaths = deaths - lag(deaths))
+
+
+Global_totals %>%
+  filter(Country_Region == "Canada") %>%
+  filter(cases>0) %>%
+  ggplot(aes(x=date, y=new_cases)) +
+  geom_line(aes(colour="cases")) +
+  geom_point(aes(colour="cases")) +
+  geom_line(aes(y=new_deaths, colour="deaths")) +
+  geom_point(aes(y=new_deaths, colour="deaths")) +
+  scale_y_log10() +
+  ggtitle("COVID-19 in the Canada,
+          New Daily Cases and Deaths") +
+  labs(y=NULL,  x="Date", colour=NULL) +
+  theme(plot.title = element_text(size=20, hjust = 0.5),
+        axis.title.x = element_text(size=15),
+        axis.title.y = element_text(size=15), 
+        axis.text.x = element_text(size=10),
+        axis.text.y = element_text(size=10),
+        )
+
+
+
+```
+Comparing this plot to the US version, you can see that Canada has seen much more variance in the number of cases and deaths per day over the course of the pandemic. One thing to note is the population of Canada is quite a bit lower than that of the states, but it would be interesting to see if there are other differences between the way the two countries dealt with the pandemic and how they relate to the data. The Canadian data seems to have two equally low dips in their graph, where America only had the one. Also it seems that there is more variability in the numbers earlier on, around August and September of 2020, in addition to the variance around the same time the following year that was seen on the US graph as well. Now that we have a good idea of what the data looks like visually, we can begin to create models to determine quantitative relationships between different variables.
+
+## Modeling the Data
+
+The models that are created look at the relationship between the number of cases and number of deaths. For this, the comparison of Canada and the US will be continued, as models of cases versus deaths will be created for both countries. These models will look specifically at the cases per thousand and deaths per thousand for each of the states, for the US model, and the provinces for the Canadian model. 
+
+The first model, for the US, is created and a summary is shown below. It is then plotted against the original data points for each state.
+
+
+
+```{r modeling_1, echo=FALSE}
+
+US_state_totals <- US_by_state %>%
+  group_by(Province_State) %>%
+  summarize(deaths=max(deaths), cases=max(cases),
+            Population = max(Population), cases_per_thou = 1000 * cases / Population,
+            deaths_per_thou = 1000 * deaths / Population) %>% 
+  filter(cases > 0, Population > 0)
+
+mod <-lm(deaths_per_thou ~ cases_per_thou, data = US_state_totals)
+summary(mod)
+
+US_total_w_pred <- US_state_totals %>% mutate(pred = predict(mod))
+
+US_total_w_pred %>% 
+  ggplot() + 
+  geom_point(aes(x=cases_per_thou, y=deaths_per_thou),colour="darkslategray4") + 
+  geom_point(aes(x=cases_per_thou, y=pred), colour="red") +
+  ggtitle("United States Model of Cases vs Deaths") +
+  labs(y="Deaths per Thousand",  x="Cases per Thousand") +
+  theme(plot.title = element_text(size=20, hjust = 0.5),
+        axis.title.x = element_text(size=15),
+        axis.title.y = element_text(size=15), 
+        axis.text.x = element_text(size=10),
+        axis.text.y = element_text(size=10),
+        )
+
+
+  
+
+```
+This model, seen in red, seems to do a pretty good job of fitting the data, although at the higher numbers of cases and deaths the data points are quite spread out, and therefor harder to match. At the lower number of cases, the model predicts that there will be more deaths than there acually is, and shows a higher mortality rate. It provides us with a pretty good prediction based on data that confirms what was observed from earlier visualizations, that the number of deaths is positiovly correlated to the number of cases.
+
+To create the Canadian model an additional step is nessesary as the data we are working with does not have populations for the provinces. This is solved easily as that data was found from the site below, and transformed so that it could be merged with our data. Once that data is added, the model is created and is displayed below.
+
+Provience population data: "https://raw.githubusercontent.com/tommy321/Canadian_Population_Density/master/2016_census_data/T1901EN.CSV"
+
+
+```{r modeling_2, echo=FALSE}
+url_prov <- "https://raw.githubusercontent.com/tommy321/Canadian_Population_Density/master/2016_census_data/T1901EN.CSV"
+population_provinces <- read.csv(url_prov)
+
+population_provinces <- population_provinces %>%
+  group_by(Province...territory..english) %>%
+  summarize(Population = sum(Population..2016)) %>%
+  rename(Province_State = Province...territory..english)
+
+proviences_with_pop <- Canada_totals %>%
+  left_join(y=population_provinces, by="Province_State")
+
+proviences_with_pop <- proviences_with_pop %>%
+  summarise(cases_per_thou = 1000 * cases / Population.y,
+            deaths_per_thou = 1000 * deaths / Population.y)
+
+proviences_with_pop <- na.omit(proviences_with_pop)
+mod <-lm(deaths_per_thou ~ cases_per_thou, data = proviences_with_pop)
+summary(mod)
+
+provinces_with_pred <- proviences_with_pop %>% mutate(pred = predict(mod))
+
+
+provinces_with_pred %>% 
+  ggplot() + 
+  geom_point(aes(x=cases_per_thou, y=deaths_per_thou),colour="darkslategray4") + 
+  geom_line(aes(x=cases_per_thou, y=pred), colour="red") + 
+  geom_point(aes(x=cases_per_thou, y=pred), colour="red") + 
+  ggtitle("Canadian Model of Cases vs Deaths") +
+  labs(y="Deaths per Thousand",  x="Cases per Thousand") +
+  theme(plot.title = element_text(size=20, hjust = 0.5),
+        axis.title.x = element_text(size=15),
+        axis.title.y = element_text(size=15), 
+        axis.text.x = element_text(size=10),
+        axis.text.y = element_text(size=10),
+        )
+
+
+  
+
+```
+The first obvious thing we see from this graph is that there are less data points, and therefor the model is not going to fpredict relationships as well. This is a tough situation as there are simply fewer provinces in Canada then there are in the states. On solution for this could be to base this on cities cases and deaths per population, as that would provide many more data points. None the less, this plot shows that there is the same positive correlation in Canada between the number of cases and deaths due to COVID 19. This model, despite its weaknesses seems to do a better job at making predictions around the lower number of cases. This could be because most of the data from Canadian provinces seem to exhibit lower numbers of cases per thousand.
+
+## Conclusion 
+
+This analysis allowed us to pull alot of interesting and useful information out of the data. We were also able to practice skills in data analysis including finding good data, cleaning the data, transforming and visualizing the data, and then transforming it some more, and modeling data.
+
+From this analysis we saw that the general tends in the number of deaths related to COVId-19 closely follow the trends in the number of cases, in both the United States and Canada, and very likely in other countries as well. This correlation was confirmed in our models of data, and the predictions based off these models, which used data from both the US and Canada. We were also able to compare the number of cases over the course of the pandemic between the US and Canada, as well as the changes in new daily cases and deaths. From this we were able to infer that maybe the differences in the numbers are a result of the different ways they handled the pandemic, in regards to restrictions and mandates. Further analysis would be required to say for sure. 
+
+We also looked at the US data by state, and found that there was vast differences in number of total cases, cases per one thousand, and daily new cases. Some states that we looked at even had extreme outliers, for example Florida with new daily cases of around 70000 at some points. It was interesting to see as well how the cases per thousand changed for states over time, and to make hypotheses on why that might have been.
+
+In this report we were able to pull some interesting info out of the data, but there is the potential for alot more to be discovered from it, in a few areas identified throughout.
+
+
+## Recognition of Bias
+
+There were obviously many potential situations for bias in this investigation of the data. Looking at just the data, it is being recorded by people all across the world, in each country for the global data. We hope there isn't, but its very possible that there could be huge differences in the way that data is collected and recorded. For example, in poorer countries people may not have access to healthcare or doctors, so when they get sick they may just stay home, ride it ou, and never report cases to the organization collecting data. Even within the united states there may be regions which reporting and testing is done differently meaning that the numbers are not consistent between states. Also there was additional population data that was introduced at two points in the analysis, which further opens up the report to biases.
+
+This is just one example of possible bias. There is bias in the way that this report was put together. Not on purpose and hopefully not with  negative consequences, but the topics I choose to focus on and the decisions I made in visualizing and modeling data were guided by my personal interest and views. This is something that is important to consider and be aware of in other peoples work, as well as your own. It's important to take steps during analysis to recognize your own bias and make an effort to counter in your own work. An example from this report is the fact that I am from Canada, and so when dealing with Canadian data I made an effort not to let my feeling about my country come through in my analysis. I put a lot of thought into this issue, and hope that I was successful in not conveying any personal biases, at least without pointing them out.
+
+
+
